@@ -16,6 +16,42 @@
 
 #define TLS_SOCKET_BUFFER_SIZE 17000
 
+#ifndef SP_PROT_SSL2_CLIENT
+#define SP_PROT_SSL2_CLIENT             0x00000008
+#endif
+
+#ifndef SP_PROT_SSL3_CLIENT
+#define SP_PROT_SSL3_CLIENT             0x00000008
+#endif
+
+#ifndef SP_PROT_TLS1_CLIENT
+#define SP_PROT_TLS1_CLIENT             0x00000080
+#endif
+
+#ifndef SP_PROT_TLS1_0_CLIENT
+#define SP_PROT_TLS1_0_CLIENT           SP_PROT_TLS1_CLIENT
+#endif
+
+#ifndef SP_PROT_TLS1_1_CLIENT
+#define SP_PROT_TLS1_1_CLIENT           0x00000200
+#endif
+
+#ifndef SP_PROT_TLS1_2_CLIENT
+#define SP_PROT_TLS1_2_CLIENT           0x00000800
+#endif
+
+#ifndef SP_PROT_TLS1_3_CLIENT
+#define SP_PROT_TLS1_3_CLIENT           0x00002000
+#endif
+
+#ifndef SCH_USE_STRONG_CRYPTO
+#define SCH_USE_STRONG_CRYPTO           0x00400000
+#endif
+
+#ifndef SECBUFFER_ALERT
+#define SECBUFFER_ALERT                 17
+#endif
+
 const char* hssl_backend()
 {
     return "schannel";
@@ -39,15 +75,14 @@ hssl_ctx_t hssl_ctx_new(hssl_ctx_opt_t* opt)
 {
     SECURITY_STATUS SecStatus;
     TimeStamp Lifetime;
-    CredHandle* hCred = malloc(sizeof(CredHandle));
+    CredHandle* hCred = NULL;
     SCHANNEL_CRED credData = { 0 };
     TCHAR unisp_name[] = UNISP_NAME;
     unsigned long credflag;
-    SecPkgCred_SupportedAlgs algs;
 
     if (opt && opt->endpoint == HSSL_SERVER) {
         PCCERT_CONTEXT serverCert = NULL; // server-side certificate
-#if 1 // create ceart from store
+#if 1 // create cert from store
 
         //-------------------------------------------------------
         // Get the server certificate.
@@ -88,25 +123,32 @@ hssl_ctx_t hssl_ctx_new(hssl_ctx_opt_t* opt)
         credData.palgSupportedAlgs = rgbSupportedAlgs;
 #endif
     credData.dwVersion = SCHANNEL_CRED_VERSION;
-    credData.dwFlags = SCH_CRED_NO_DEFAULT_CREDS | SCH_CRED_NO_SERVERNAME_CHECK | SCH_USE_STRONG_CRYPTO | SCH_CRED_MANUAL_CRED_VALIDATION | SCH_CRED_IGNORE_NO_REVOCATION_CHECK | SCH_CRED_IGNORE_REVOCATION_OFFLINE;
-
+    // credData.dwFlags = SCH_CRED_NO_DEFAULT_CREDS | SCH_CRED_NO_SERVERNAME_CHECK | SCH_USE_STRONG_CRYPTO | SCH_CRED_MANUAL_CRED_VALIDATION | SCH_CRED_IGNORE_NO_REVOCATION_CHECK | SCH_CRED_IGNORE_REVOCATION_OFFLINE;
+    // credData.dwFlags = SCH_CRED_AUTO_CRED_VALIDATION | SCH_CRED_REVOCATION_CHECK_CHAIN | SCH_CRED_IGNORE_REVOCATION_OFFLINE;
     // credData.dwMinimumCipherStrength = -1;
     // credData.dwMaximumCipherStrength = -1;
 
     //-------------------------------------------------------
-    SecStatus = AcquireCredentialsHandle(NULL, unisp_name, credflag, NULL, &credData, NULL, NULL, hCred, &Lifetime);
-    if (SecStatus != SEC_E_OK) {
-        printe("ERROR: AcquireCredentialsHandle: 0x%x\n", SecStatus);
-        abort();
-    }
-    // Return the handle to the caller.
-    SecStatus = QueryCredentialsAttributesA(hCred, SECPKG_ATTR_SUPPORTED_ALGS, &algs);
-    if (SecStatus == SEC_E_OK) {
-        for (int i = 0; i < algs.cSupportedAlgs; i++) {
-            printd("alg: 0x%08x\n", algs.palgSupportedAlgs[i]);
-        }
+    hCred = (CredHandle*)malloc(sizeof(CredHandle));
+    if (hCred == NULL) {
+        return NULL;
     }
 
+    SecStatus = AcquireCredentialsHandle(NULL, unisp_name, credflag, NULL, &credData, NULL, NULL, hCred, &Lifetime);
+    if (SecStatus == SEC_E_OK) {
+#ifndef NDEBUG
+        SecPkgCred_SupportedAlgs algs;
+        if (QueryCredentialsAttributesA(hCred, SECPKG_ATTR_SUPPORTED_ALGS, &algs) == SEC_E_OK) {
+            for (int i = 0; i < algs.cSupportedAlgs; i++) {
+                printd("alg: 0x%08x\n", algs.palgSupportedAlgs[i]);
+            }
+        }
+#endif
+    } else {
+        printe("ERROR: AcquireCredentialsHandle: 0x%x\n", SecStatus);
+        free(hCred);
+        hCred = NULL;
+    }
     return hCred;
 }
 
@@ -162,11 +204,13 @@ struct wintls_s {
 hssl_t hssl_new(hssl_ctx_t ssl_ctx, int fd)
 {
     struct wintls_s* ret = malloc(sizeof(*ret));
-    memset(ret, 0, sizeof(*ret));
-    ret->ssl_ctx = ssl_ctx;
-    ret->fd = fd;
-    ret->sechandle.dwLower = 0;
-    ret->sechandle.dwUpper = 0;
+    if (ret) {
+        memset(ret, 0, sizeof(*ret));
+        ret->ssl_ctx = ssl_ctx;
+        ret->fd = fd;
+        ret->sechandle.dwLower = 0;
+        ret->sechandle.dwUpper = 0;
+    }
     return ret;
 }
 
@@ -478,12 +522,12 @@ static void dumpconninfo(SecHandle* sechandle)
         printd("Protocol: SSL3\n");
         break;
 
-    case SP_PROT_PCT1_CLIENT:
-        printd("Protocol: PCT\n");
-        break;
-
     case SP_PROT_SSL2_CLIENT:
         printd("Protocol: SSL2\n");
+        break;
+
+    case SP_PROT_PCT1_CLIENT:
+        printd("Protocol: PCT\n");
         break;
 
     default:
